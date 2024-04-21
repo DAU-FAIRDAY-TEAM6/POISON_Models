@@ -18,28 +18,30 @@ import torch.backends.cudnn as cudnn
 #import path + #import evaluate
 #import data_utils
 
+#https://github.com/guoyang9/BPR-pytorch
+
 path = './dataset/'
 
 
 def load_all(test_num=100):
 	""" We load all the three file here to save time in each epoch. """
 	train_data = pd.read_csv(
-		path + 'train.csv', 
-		sep=',', header=None, names=['user', 'business'], 
+		path + 'pinterest-20.train.rating', 
+		sep=',', header=None, names=['user', 'item'], 
 		usecols=[0, 1], dtype={0: np.int32, 1: np.int32})
 
 	user_num = train_data['user'].max() + 1
-	business_num = train_data['business'].max() + 1
+	item_num = train_data['item'].max() + 1
 
 	train_data = train_data.values.tolist()
 
 	# load ratings as a dok matrix
-	train_mat = sp.dok_matrix((user_num, business_num), dtype=np.float32)
+	train_mat = sp.dok_matrix((user_num, item_num), dtype=np.float32)
 	for x in train_data:
 		train_mat[x[0], x[1]] = 1.0
 
 	test_data = []
-	with open(path + 'test_neg.csv', 'r') as fd:
+	with open(path + 'pinterest-20.test.negative', 'r') as fd:
 		line = fd.readline()
 		while line != None and line != '':
 			arr = line.split('\t')
@@ -48,18 +50,18 @@ def load_all(test_num=100):
 			for i in arr[1:]:
 				test_data.append([u, int(i)])
 			line = fd.readline()
-	return train_data, test_data, user_num, business_num, train_mat
+	return train_data, test_data, user_num, item_num, train_mat
 
 
 class BPRData(data.Dataset):
 	def __init__(self, features, 
-				num_business, train_mat=None, num_ng=0, is_training=None):
+				num_item, train_mat=None, num_ng=0, is_training=None):
 		super(BPRData, self).__init__()
 		""" Note that the labels are only useful when training, we thus 
 			add them in the ng_sample() function.
 		"""
 		self.features = features
-		self.num_business = num_business
+		self.num_item = num_item
 		self.train_mat = train_mat
 		self.num_ng = num_ng
 		self.is_training = is_training
@@ -71,9 +73,9 @@ class BPRData(data.Dataset):
 		for x in self.features:
 			u, i = x[0], x[1]
 			for t in range(self.num_ng):
-				j = np.random.randint(self.num_business)
+				j = np.random.randint(self.num_item)
 				while (u, j) in self.train_mat:
-					j = np.random.randint(self.num_business)
+					j = np.random.randint(self.num_item)
 				self.features_fill.append([u, i, j])
 
 	def __len__(self):
@@ -85,21 +87,21 @@ class BPRData(data.Dataset):
 				self.is_training else self.features
 
 		user = features[idx][0]
-		business_i = features[idx][1]
-		business_j = features[idx][2] if \
+		item_i = features[idx][1]
+		item_j = features[idx][2] if \
 				self.is_training else features[idx][1]
-		return user, business_i, business_j 
+		return user, item_i, item_j 
 		
 
-def hit(gt_business, pred_businesses):
-	if gt_business in pred_businesses:
+def hit(gt_item, pred_itemes):
+	if gt_item in pred_itemes:
 		return 1
 	return 0
 
 
-def ndcg(gt_business, pred_businesses):
-	if gt_business in pred_businesses:
-		index = pred_businesses.index(gt_business)
+def ndcg(gt_item, pred_itemes):
+	if gt_item in pred_itemes:
+		index = pred_itemes.index(gt_item)
 		return np.reciprocal(np.log2(index+2))
 	return 0
 
@@ -107,45 +109,45 @@ def ndcg(gt_business, pred_businesses):
 def metrics(model, test_loader, top_k):
 	HR, NDCG = [], []
 
-	for user, business_i, business_j in test_loader:
+	for user, item_i, item_j in test_loader:
 		user = user.cuda()
-		business_i = business_i.cuda()
-		business_j = business_j.cuda() # not useful when testing
+		item_i = item_i.cuda()
+		item_j = item_j.cuda() # not useful when testing
 
-		prediction_i, prediction_j = model(user, business_i, business_j)
+		prediction_i, prediction_j = model(user, item_i, item_j)
 		_, indices = torch.topk(prediction_i, top_k)
 		recommends = torch.take(
-				business_i, indices).cpu().numpy().tolist()
+				item_i, indices).cpu().numpy().tolist()
 
-		gt_business = business_i[0].business()
-		HR.append(hit(gt_business, recommends))
-		NDCG.append(ndcg(gt_business, recommends))
+		gt_item = item_i[0].item()
+		HR.append(hit(gt_item, recommends))
+		NDCG.append(ndcg(gt_item, recommends))
 
 	return np.mean(HR), np.mean(NDCG)
 
 
 
 class BPR(nn.Module):
-	def __init__(self, user_num, business_num, factor_num):
+	def __init__(self, user_num, item_num, factor_num):
 		super(BPR, self).__init__()
 		"""
 		user_num: number of users;
-		business_num: number of businesses;
+		item_num: number of itemes;
 		factor_num: number of predictive factors.
 		"""		
 		self.embed_user = nn.Embedding(user_num, factor_num)
-		self.embed_business = nn.Embedding(business_num, factor_num)
+		self.embed_item = nn.Embedding(item_num, factor_num)
 
 		nn.init.normal_(self.embed_user.weight, std=0.01)
-		nn.init.normal_(self.embed_business.weight, std=0.01)
+		nn.init.normal_(self.embed_item.weight, std=0.01)
 
-	def forward(self, user, business_i, business_j):
+	def forward(self, user, item_i, item_j):
 		user = self.embed_user(user)
-		business_i = self.embed_business(business_i)
-		business_j = self.embed_business(business_j)
+		item_i = self.embed_item(item_i)
+		item_j = self.embed_item(item_j)
 
-		prediction_i = (user * business_i).sum(dim=-1)
-		prediction_j = (user * business_j).sum(dim=-1)
+		prediction_i = (user * item_i).sum(dim=-1)
+		prediction_j = (user * item_j).sum(dim=-1)
 		return prediction_i, prediction_j
 
 
@@ -181,11 +183,11 @@ if __name__ == '__main__':
 	parser.add_argument("--num_ng", 
 		type=int,
 		default=4, 
-		help="sample negative businesses for training")
+		help="sample negative itemes for training")
 	parser.add_argument("--test_num_ng", 
 		type=int,
 		default=99, 
-		help="sample part of negative businesses for testing")
+		help="sample part of negative itemes for testing")
 	parser.add_argument("--out", 
 		default=True,
 		help="save model or not")
@@ -200,20 +202,20 @@ if __name__ == '__main__':
 
 
 	############################## PREPARE DATASET ##########################
-	train_data, test_data, user_num ,business_num, train_mat = load_all()
+	train_data, test_data, user_num ,item_num, train_mat = load_all()
 
 	# construct the train and test datasets
 	train_dataset = BPRData(
-			train_data, business_num, train_mat, args.num_ng, True)
+			train_data, item_num, train_mat, args.num_ng, True)
 	test_dataset = BPRData(
-			test_data, business_num, train_mat, 0, False)
+			test_data, item_num, train_mat, 0, False)
 	train_loader = data.DataLoader(train_dataset,
 			batch_size=args.batch_size, shuffle=True, num_workers=4)
 	test_loader = data.DataLoader(test_dataset,
 			batch_size=args.test_num_ng+1, shuffle=False, num_workers=0)
 
 	########################### CREATE MODEL #################################
-	model = BPR(user_num, business_num, args.factor_num)
+	model = BPR(user_num, item_num, args.factor_num)
 	model.cuda()
 
 	optimizer = optim.SGD(
@@ -227,17 +229,17 @@ if __name__ == '__main__':
 		start_time = time.time()
 		train_loader.dataset.ng_sample()
 
-		for user, business_i, business_j in train_loader:
+		for user, item_i, item_j in train_loader:
 			user = user.cuda()
-			business_i = business_i.cuda()
-			business_j = business_j.cuda()
+			item_i = item_i.cuda()
+			item_j = item_j.cuda()
 
 			model.zero_grad()
-			prediction_i, prediction_j = model(user, business_i, business_j)
+			prediction_i, prediction_j = model(user, item_i, item_j)
 			loss = - (prediction_i - prediction_j).sigmoid().log().sum()
 			loss.backward()
 			optimizer.step()
-			# writer.add_scalar('data/loss', loss.business(), count)
+			# writer.add_scalar('data/loss', loss.item(), count)
 			count += 1
 
 		model.eval()
