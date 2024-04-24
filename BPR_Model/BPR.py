@@ -1,394 +1,292 @@
+import numpy as np 
+import pandas as pd 
+import scipy.sparse as sp
+
+import config
+
+#import path + 
+import os
 import time
-import numpy as np
-from numpy import random
+import argparse
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
-from torch.utils.data import DataLoader
-from torch.utils.data import Dataset
+import torch.utils.data as data
+import torch.backends.cudnn as cudnn
+#from tensorboardX import SummaryWriter
 
-import multiprocessing as mp
-import argparse
+#import model
+#import path + #import evaluate
+#import data_utils
 
-import math
-import heapq # for retrieval topK
+#https://github.com/guoyang9/BPR-pytorch
 
-class MFbpr(nn.Module):
-    '''
-    MF 모델에 대한 BPR 학습
-    '''
-    def __init__(self, dataset, factors, learning_rate, reg, init_mean, init_stdev):
-        '''
-        생성자
-        Args:
-            dataset: 데이터셋 객체로, 학습 및 테스트 데이터를 포함합니다.
-            factors (int): 잠재 요인의 수.
-            learning_rate (float): 최적화에 사용되는 학습률.
-            reg (float): 정규화 강도.
-            init_mean (float): 초기화에 사용되는 정규 분포의 평균.
-            init_stdev (float): 초기화에 사용되는 정규 분포의 표준 편차.
-        '''
-        super(MFbpr, self).__init__()
-        self.dataset = dataset
-        self.train = dataset.train
-        self.test = dataset.test
-        self.num_user = dataset.num_user
-        self.num_item = dataset.num_item
-        self.neg = dataset.neg
-        self.factors = factors
-        self.learning_rate = learning_rate
-        self.reg = reg
-        self.init_mean = init_mean
-        self.init_stdev = init_stdev
+path = './dataset/'
 
-        # 사용자와 아이템의 잠재 요인을 초기화합니다.
-        self.U = torch.normal(mean=self.init_mean * torch.ones(self.num_user, self.factors), std=self.init_stdev).requires_grad_()
-        self.V = torch.normal(mean=self.init_mean * torch.ones(self.num_item, self.factors), std=self.init_stdev).requires_grad_()
+# def load_all(test_num=100):
+# 	""" We load all the three file here to save time in each epoch. """
+# 	train_data = pd.read_csv(
+# 		config.train_rating, 
+# 		sep='\t', header=None, names=['user', 'item'], 
+# 		usecols=[0, 1], dtype={0: np.int32, 1: np.int32})
 
-        # Adam optimizer를 초기화합니다.
-        self.mf_optim = optim.Adam([self.U, self.V], lr=self.learning_rate)
-        self.items_of_user = []
-        self.num_rating = 0
-        for u in range(len(self.train)):
-            # 각 사용자가 평가한 아이템 목록을 저장합니다.
-            self.items_of_user.append(set([]))
-            for i in range(len(self.train[u])):
-                item = self.train[u][i][0]
-                self.items_of_user[u].add(item)
-                self.num_rating += 1
+# 	user_num = train_data['user'].max() + 1
+# 	item_num = train_data['item'].max() + 1
+
+# 	train_data = train_data.values.tolist()
+
+# 	# load ratings as a dok matrix
+# 	train_mat = sp.dok_matrix((user_num, item_num), dtype=np.float32)
+# 	for x in train_data:
+# 		train_mat[x[0], x[1]] = 1.0
+
+# 	test_data = []
+# 	with open(config.test_negative, 'r') as fd:
+# 		line = fd.readline()
+# 		while line != None and line != '':
+# 			arr = line.split('\t')
+# 			u = eval(arr[0])[0]
+# 			test_data.append([u, eval(arr[0])[1]])
+# 			for i in arr[1:]:
+# 				test_data.append([u, int(i)])
+# 			line = fd.readline()
+# 	return train_data, test_data, user_num, item_num, train_mat
 
 
-    def forward(self, u, i, j):
-        '''
-        MF-BPR 모델의 forward pass입니다.
-        Args:
-            u: 사용자 ID.
-            i: 긍정적인 아이템 ID.
-            j: 부정적인 아이템 ID.
-        Returns:
-            y_ui: 사용자와 긍정적인 아이템 간의 예측 점수.
-            y_uj: 사용자와 부정적인 아이템 간의 예측 점수.
-            loss: BPR 손실.
-        '''
-        # 사용자와 긍정적인 아이템 간의 예측 점수 계산
-        y_ui = torch.diag(torch.mm(self.U[u], self.V[i].t()))
-        # 사용자와 부정적인 아이템 간의 예측 점수 계산
-        y_uj = torch.diag(torch.mm(self.U[u], self.V[j].t()))
-        # 정규화 항 계산
-        regularizer = self.reg * (torch.sum(self.U[u] ** 2) + torch.sum(self.V[i] ** 2) + torch.sum(self.V[j] ** 2))
-        # BPR 손실 계산
-        loss = regularizer - torch.sum(torch.log2(torch.sigmoid(y_ui - y_uj)))
-        return y_ui, y_uj, loss
+def load_all(test_num=100):
+	""" We load all the three file here to save time in each epoch. """
+	train_data = pd.read_csv(
+		path + 'train.csv', 
+		sep=',', header=None, names=['user', 'item'], 
+		usecols=[0, 1], dtype={0: np.int32, 1: np.int32})
 
-    def build_model(self, epoch=30, num_thread=8, batch_size=32, topK = 10):
-        '''
-        MF-BPR 모델을 구축하고 학습합니다.
-        Args:
-            epoch (int): 학습의 최대 반복 횟수.
-            num_thread (int): 병렬 실행을 위한 스레드 수.
-            batch_size (int): 학습용 배치 크기.
-        '''
-        data_loader = DataLoader(self.dataset, batch_size=batch_size)
+	user_num = train_data['user'].max() + 1
+	item_num = train_data['item'].max() + 1
 
-        print("Training MF-BPR with: learning_rate=%.4f, regularization=%.4f, factors=%d, #epoch=%d, batch_size=%d."
-               % (self.learning_rate, self.reg, self.factors, epoch, batch_size))
-        t1 = time.time()
-        iter_loss = 0
-        for epoc in range(epoch):
-            for s, (users, items_pos, items_neg) in enumerate(data_loader):
-                # 기울기 초기화
-                self.mf_optim.zero_grad()
-                # Forward pass를 통해 예측과 손실 계산
-                y_ui, y_uj, loss = self.forward(users, items_pos, items_neg)
-                iter_loss += loss
-                # Backward pass 및 파라미터 업데이트
-                loss.backward()
-                self.mf_optim.step()
-            t2 = time.time()
-            
-            # 성능 측정 함수를 통해 HitRatio 및 NDCG를 계산
-            (hits, ndcgs) = evaluate_model(self, self.test, topK, num_thread)
-            hr_mean = np.array(hits).mean()
-            ndcg_mean = np.array(ndcgs).mean()
+	train_data = train_data.values.tolist()
 
-            print("epoch=%d [%.1f s] HitRatio@%d = %.4f, NDCG@%d = %.4f [%.1f s]"
-                    % (epoc, (t2 - t1), topK, hr_mean, topK, ndcg_mean, time.time() - t2))
-            t1 = time.time()
-            iter_loss = 0
+	# load ratings as a dok matrix
+	train_mat = sp.dok_matrix((user_num, item_num), dtype=np.float32)
+	for x in train_data:
+		train_mat[x[0], x[1]] = 1.0
+
+	test_data = []
+	with open(path + 'test_neg_100.csv', 'r') as fd:
+		line = fd.readline()
+		while line != None and line != '':
+			arr = line.split('\t')
+			u = eval(arr[0])[0]
+			test_data.append([u, eval(arr[0])[1]])
+			for i in arr[1:]:
+				test_data.append([u, int(i)])
+			line = fd.readline()
+	return train_data, test_data, user_num, item_num, train_mat
 
 
-    def predict(self, u, i):
-        '''
-        사용자와 아이템 사이의 점수를 예측합니다.
-        Args:
-            u: 사용자 ID.
-            i: 아이템 ID.
-        Returns:
-            score: 사용자와 아이템 사이의 예측 점수.
-        '''
-        return np.inner(self.U[u].detach().numpy(), self.V[i].detach().numpy())
+class BPRData(data.Dataset):
+	def __init__(self, features, 
+				num_item, train_mat=None, num_ng=0, is_training=None):
+		super(BPRData, self).__init__()
+		""" Note that the labels are only useful when training, we thus 
+			add them in the ng_sample() function.
+		"""
+		self.features = features
+		self.num_item = num_item
+		self.train_mat = train_mat
+		self.num_ng = num_ng
+		self.is_training = is_training
 
-    def get_batch(self, batch_size):
-        '''
-        학습 데이터의 배치를 가져옵니다.
-        Args:
-            batch_size (int): 배치 크기.
-        Returns:
-            users: 사용자 ID 목록.
-            pos_items: 긍정적인 아이템 ID 목록.
-            neg_items: 부정적인 아이템 ID 목록.
-        '''
-        users, pos_items, neg_items = [], [], []
-        for i in range(batch_size):
-            u = np.random.randint(0, self.num_user)
-            i = self.train[u][np.random.randint(0, len(self.train[u]))][0]
-            j = np.random.randint(0, self.num_item)
-            while j in self.items_of_user[u]:
-                j = np.random.randint(0, self.num_item)
-            users.append(u)
-            pos_items.append(i)
-            neg_items.append(j)
-        return (users, pos_items, neg_items)
+	def ng_sample(self):
+		assert self.is_training, 'no need to sampling when testing'
 
-def LoadRatingFile_HoldKOut(filename, splitter, K):
-    """
-    주어진 .rating 파일을 읽고 Hold-K-Out 교차 검증을 위한 학습 및 테스트 데이터를 생성합니다.
+		self.features_fill = []
+		for x in self.features:
+			u, i = x[0], x[1]
+			for t in range(self.num_ng):
+				j = np.random.randint(self.num_item)
+				while (u, j) in self.train_mat:
+					j = np.random.randint(self.num_item)
+				self.features_fill.append([u, i, j])
 
-    Args:
-        filename (str): .rating 파일의 경로.
-        splitter (str): 파일에서 열을 구분하는 구분자.
-        K (int): K 값, 즉 각 사용자마다 테스트에 사용되는 상호작용의 수.
+	def __len__(self):
+		return self.num_ng * len(self.features) if \
+				self.is_training else len(self.features)
 
-    Returns:
-        train (list): Hold-K-Out 교차 검증을 위한 학습 데이터.
-        test (list): Hold-K-Out 교차 검증을 위한 테스트 데이터.
-        num_user (int): 사용자 수.
-        num_item (int): 아이템 수.
-        num_ratings (int): 전체 상호작용 수.
-    """
-    train = []
-    test = []
+	def __getitem__(self, idx):
+		features = self.features_fill if \
+				self.is_training else self.features
 
-    num_ratings = 0
-    num_item = 0
-    # 파일을 읽어서 train 및 test 데이터 생성
-    with open(filename, "r") as f:
-        line = f.readline()
-        while line != None and line != "":
-            arr = line.split(splitter)
-            if (len(arr) < 4):
-                continue
-            user, item, time = int(arr[0]), int(arr[1]), int(arr[3])
-            # 사용자별로 상호작용 데이터를 저장
-            if (len(train) <= user):
-                train.append([])
-            train[user].append([item, time])
-            num_ratings += 1
-            num_item = max(item, num_item)
-            line = f.readline()
-    num_user = len(train)
-    num_item = num_item + 1
+		user = features[idx][0]
+		item_i = features[idx][1]
+		item_j = features[idx][2] if \
+				self.is_training else features[idx][1]
+		return user, item_i, item_j 
+		
 
-    # 상호작용 데이터를 시간순으로 정렬
-    def getTime(item):
-        return item[-1];
-    for u in range (len(train)):
-        train[u] = sorted(train[u], key = getTime)
-
-    # Hold-K-Out 교차 검증을 위해 학습 및 테스트 데이터 생성
-    for u in range (len(train)):
-        for k in range(K):
-            if (len(train[u]) == 0):
-                break
-            # 가장 최근에 발생한 상호작용을 테스트 데이터로 이동
-            test.append([u, train[u][-1][0], train[u][-1][1]])
-            del train[u][-1]
-
-    test = sorted(test, key = getTime)
-
-    return train, test, num_user, num_item, num_ratings
-
-class Pinterest(Dataset):
-    def __init__(self, dir, splitter, K):
-        """
-        Pinterest 데이터셋을 로드하고 학습 데이터와 테스트 데이터를 생성합니다.
-
-        Args:
-            dir (str): 데이터 파일이 있는 디렉토리 경로.
-            splitter (str): 파일에서 열을 구분하는 구분자.
-            K (int): K 값, 즉 각 사용자마다 테스트에 사용되는 상호작용의 수.
-        """
-
-        self.train = []
-
-        self.num_ratings = 0
-        self.num_item = 0
-        # pos.txt 파일을 읽어서 학습 데이터 생성
-        with open(dir+'pos.txt', "r") as f:
-            line = f.readline()
-            while line != None and line != "":
-                arr = line.split(splitter)
-                if (len(arr) < 2):
-                    continue
-                user, item = int(arr[0]), int(arr[1])
-                # 사용자별로 상호작용 데이터를 저장
-                if (len(self.train) <= user):
-                    self.train.append([])
-                self.train[user].append([item])
-                self.num_ratings += 1
-                self.num_item = max(item, self.num_item)
-                line = f.readline()
-        self.num_user = len(self.train)
-        self.num_item = self.num_item + 1
-
-        self.test = []
-        self.neg = dict()
-        user = 0
-        # neg.txt 파일을 읽어서 테스트 데이터 및 부정적 상호작용 데이터 생성
-        with open(dir+'neg.txt', 'r') as f_neg:
-            line = f_neg.readline()
-            while line != None and line != '':
-                arr = line.split(splitter)
-                pos = int(arr[0])
-                # 테스트 데이터 생성
-                self.test.append([user, pos])
-                # 사용자별로 부정적 상호작용 데이터 저장
-                self.neg[user] = []
-                for neg_i in range(len(arr)):
-                    if arr[neg_i] != '\n':
-                        self.neg[user].append(int(arr[neg_i]))
-
-                user += 1
-                line = f_neg.readline()
-        print("#users: %d, #items: %d, #ratings: %d" %(self.num_user, self.num_item, self.num_ratings))
+def hit(gt_item, pred_itemes):
+	if gt_item in pred_itemes:
+		return 1
+	return 0
 
 
-    def __len__(self):
-        """
-        데이터셋의 사용자 수를 반환합니다.
-        """
-        return self.num_user
+def ndcg(gt_item, pred_itemes):
+	if gt_item in pred_itemes:
+		index = pred_itemes.index(gt_item)
+		return np.reciprocal(np.log2(index+2))
+	return 0
 
 
-    def __getitem__(self, idx):
-        """
-        데이터셋에서 하나의 샘플을 가져옵니다.
+def metrics(model, test_loader, top_k):
+	HR, NDCG = [], []
 
-        Args:
-            idx (int): 데이터셋 내의 인덱스.
+	for user, item_i, item_j in test_loader:
+		user = user.cuda()
+		item_i = item_i.cuda()
+		item_j = item_j.cuda() # not useful when testing
 
-        Returns:
-            u: 사용자 ID.
-            i: 긍정적인 아이템 ID.
-            j: 부정적인 아이템 ID.
-        """
-        u = idx
-        # 사용자별로 하나의 긍정적인 상호작용 선택
-        i = self.train[u][np.random.randint(0, len(self.train[u]))]
-        # 부정적인 상호작용 무작위 선택
-        j = np.random.randint(0, self.num_item)
-        while j in self.train[u]:
-            j = np.random.randint(0, self.num_item)
-        return (u, i, j)
+		prediction_i, prediction_j = model(user, item_i, item_j)
+		_, indices = torch.topk(prediction_i, top_k)
+		recommends = torch.take(
+				item_i, indices).cpu().numpy().tolist()
 
-def evaluate_model(model, testRatings, K, num_thread):
-    """
-    Top-K 추천의 성능(Hit_Ratio, NDCG)을 평가합니다.
-    반환값: 각 테스트 상호작용의 점수.
-    """
-    global _model
-    global _testRatings
-    global _K
-    _model = model
-    _testRatings = testRatings
-    _K = K
-    num_rating = len(testRatings)
+		gt_item = item_i[0].item()
+		HR.append(hit(gt_item, recommends))
+		NDCG.append(ndcg(gt_item, recommends))
 
-    hits = []
-    ndcgs = []
-    
-    for i in range(num_rating):
-        res = eval_one_rating(i)
-        hits.append(res[0])
-        ndcgs.append(res[1])
-    
-    return (hits, ndcgs)
-def eval_one_rating(idx):
-    rating = _testRatings[idx]
-    hr = ndcg = 0
-    u = rating[0]
-    gtItem = rating[1]
-    map_item_score = {}
+	return np.mean(HR), np.mean(NDCG)
 
-    maxScore = _model.predict(u, gtItem)
 
-    countLarger = 0
 
-    for i in _model.neg[u]:
+class BPR(nn.Module):
+	def __init__(self, user_num, item_num, factor_num):
+		super(BPR, self).__init__()
+		"""
+		user_num: number of users;
+		item_num: number of itemes;
+		factor_num: number of predictive factors.
+		"""		
+		self.embed_user = nn.Embedding(user_num, factor_num)
+		self.embed_item = nn.Embedding(item_num, factor_num)
 
-        early_stop = False
-        score = _model.predict(u, i)
-        map_item_score[i] = score
+		nn.init.normal_(self.embed_user.weight, std=0.01)
+		nn.init.normal_(self.embed_item.weight, std=0.01)
 
-        if score > maxScore:
-            countLarger += 1
-        if countLarger > _K:
-            hr = ndcg = 0
-            early_stop = True
-            break
+	def forward(self, user, item_i, item_j):
+		user = self.embed_user(user)
+		item_i = self.embed_item(item_i)
+		item_j = self.embed_item(item_j)
 
-    if early_stop == False:
-        ranklist = heapq.nlargest(_K, map_item_score, key=map_item_score.get)
-        hr = getHitRatio(ranklist, gtItem)
-        ndcg = getNDCG(ranklist, gtItem)
+		prediction_i = (user * item_i).sum(dim=-1)
+		prediction_j = (user * item_j).sum(dim=-1)
+		return prediction_i, prediction_j
 
-    return (hr, ndcg)
-def getHitRatio(ranklist, gtItem):
-    for item in ranklist:
-        if item == gtItem:
-            return 1
-    return 0
-def getNDCG(ranklist, gtItem):
-    for i in range(len(ranklist)):
-        item = ranklist[i]
-        if item == gtItem:
-            return math.log(2) / math.log(i+2)
-    return 0
-def parse_args():
-    """
-    명령행 인자를 파싱합니다.
-    """
-    args = argparse.Namespace()
-    args.batch_size = 64
-    args.learning_rate = 0.001
-    return args
+
+
+
 
 if __name__ == '__main__':
-    print(mp.cpu_count(), mp.current_process().name)
-    
-    args = parse_args()
-    dataset = "POISON_Models\BPR_Model\data/"  # 데이터셋 디렉토리 또는 파일
-    splitter = " "  # 데이터 구분자
-    hold_k_out = 1  # Hold-K-Out 교차 검증의 K 값
-    pinterest = Pinterest(dataset, splitter, hold_k_out)
+	parser = argparse.ArgumentParser()
+	parser.add_argument("--lr", 
+		type=float, 
+		default=0.01, 
+		help="learning rate")
+	parser.add_argument("--lamda", 
+		type=float, 
+		default=0.001, 
+		help="model regularization rate")
+	parser.add_argument("--batch_size", 
+		type=int, 
+		default=4096, 
+		help="batch size for training")
+	parser.add_argument("--epochs", 
+		type=int,
+		default=50,  
+		help="training epoches")
+	parser.add_argument("--top_k", 
+		type=int, 
+		default=10, 
+		help="compute metrics@top_k")
+	parser.add_argument("--factor_num", 
+		type=int,
+		default=32, 
+		help="predictive factors numbers in the model")
+	parser.add_argument("--num_ng", 
+		type=int,
+		default=4, 
+		help="sample negative itemes for training")
+	parser.add_argument("--test_num_ng", 
+		type=int,
+		default=99, 
+		help="sample part of negative itemes for testing")
+	parser.add_argument("--out", 
+		default=True,
+		help="save model or not")
+	parser.add_argument("--gpu", 
+		type=str,
+		default="0",  
+		help="gpu card ID")
+	args = parser.parse_args()
 
-    factors = 64  # 잠재요인 수
-    learning_rate = args.learning_rate  # 학습률
-    reg = 1e-5  # 정규화 계수
-    init_mean = 0  # 초기 가중치 평균
-    init_stdev = 0.01  # 초기 가중치 표준편차
-    epoch = 30  # 최대 반복 횟수
-    batch_size = args.batch_size  # 미니배치 크기
-    num_thread = mp.cpu_count()  # 사용할 스레드 수
-    K = 10
-    print("#factors: %d, lr: %f, reg: %f, batch_size: %d" % (factors, learning_rate, reg, batch_size))
+	os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+	cudnn.benchmark = True
 
-    # MF-BPR 모델 생성 및 학습
-    bpr = MFbpr(pinterest, factors, learning_rate, reg, init_mean, init_stdev)
-    bpr.build_model(epoch, num_thread, batch_size=batch_size, topK = K)
 
-    # 학습된 가중치 저장
-    np.save("out/u"+str(learning_rate)+".npy", bpr.U.detach().numpy())
-    np.save("out/v"+str(learning_rate)+".npy", bpr.V.detach().numpy())
+	############################## PREPARE DATASET ##########################
+	train_data, test_data, user_num ,item_num, train_mat = load_all()
+
+	# construct the train and test datasets
+	train_dataset = BPRData(
+			train_data, item_num, train_mat, args.num_ng, True)
+	test_dataset = BPRData(
+			test_data, item_num, train_mat, 0, False)
+	train_loader = data.DataLoader(train_dataset,
+			batch_size=args.batch_size, shuffle=True, num_workers=4)
+	test_loader = data.DataLoader(test_dataset,
+			batch_size=args.test_num_ng+1, shuffle=False, num_workers=0)
+
+	########################### CREATE MODEL #################################
+	model = BPR(user_num, item_num, args.factor_num)
+	model.cuda()
+
+	optimizer = optim.SGD(
+				model.parameters(), lr=args.lr, weight_decay=args.lamda)
+	# writer = SummaryWriter() # for visualization
+
+	########################### TRAINING #####################################
+	count, best_hr = 0, 0
+	for epoch in range(args.epochs):
+		model.train() 
+		start_time = time.time()
+		train_loader.dataset.ng_sample()
+
+		for user, item_i, item_j in train_loader:
+			user = user.cuda()
+			item_i = item_i.cuda()
+			item_j = item_j.cuda()
+
+			model.zero_grad()
+			prediction_i, prediction_j = model(user, item_i, item_j)
+			loss = - (prediction_i - prediction_j).sigmoid().log().sum()
+			loss.backward()
+			optimizer.step()
+			# writer.add_scalar('data/loss', loss.item(), count)
+			count += 1
+
+		model.eval()
+		HR, NDCG = metrics(model, test_loader, args.top_k)
+
+		elapsed_time = time.time() - start_time
+		print("The time elapse of epoch {:03d}".format(epoch) + " is: " + 
+				time.strftime("%H: %M: %S", time.gmtime(elapsed_time)))
+		print("HR: {:.3f}\tNDCG: {:.3f}".format(np.mean(HR), np.mean(NDCG)))
+
+		# if HR > best_hr:
+		# 	best_hr, best_ndcg, best_epoch = HR, NDCG, epoch
+		# 	if args.out:
+		# 		if not os.path.exists(path + model_path):
+		# 			os.mkdir(path + model_path)
+		# 		torch.save(model, '{}BPR.pt'.format(path + model_path))
+
+	# print("End. Best epoch {:03d}: HR = {:.3f}, \
+	# 	NDCG = {:.3f}".format(best_epoch, best_hr, best_ndcg))
