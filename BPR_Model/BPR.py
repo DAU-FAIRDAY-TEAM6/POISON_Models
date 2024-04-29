@@ -2,9 +2,6 @@ import numpy as np
 import pandas as pd 
 import scipy.sparse as sp
 
-import config
-
-#import path + 
 import os
 import time
 import argparse
@@ -14,172 +11,98 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.utils.data as data
 import torch.backends.cudnn as cudnn
-#from tensorboardX import SummaryWriter
-
-#import model
-#import path + #import evaluate
-#import data_utils
 
 #https://github.com/guoyang9/BPR-pytorch
 
-path = './dataset/'
-
-# def load_all(test_num=100):
-# 	""" We load all the three file here to save time in each epoch. """
-# 	train_data = pd.read_csv(
-# 		config.train_rating, 
-# 		sep='\t', header=None, names=['user', 'item'], 
-# 		usecols=[0, 1], dtype={0: np.int32, 1: np.int32})
-
-# 	user_num = train_data['user'].max() + 1
-# 	item_num = train_data['item'].max() + 1
-
-# 	train_data = train_data.values.tolist()
-
-# 	# load ratings as a dok matrix
-# 	train_mat = sp.dok_matrix((user_num, item_num), dtype=np.float32)
-# 	for x in train_data:
-# 		train_mat[x[0], x[1]] = 1.0
-
-# 	test_data = []
-# 	with open(config.test_negative, 'r') as fd:
-# 		line = fd.readline()
-# 		while line != None and line != '':
-# 			arr = line.split('\t')
-# 			u = eval(arr[0])[0]
-# 			test_data.append([u, eval(arr[0])[1]])
-# 			for i in arr[1:]:
-# 				test_data.append([u, int(i)])
-# 			line = fd.readline()
-# 	return train_data, test_data, user_num, item_num, train_mat
-
-
 def load_all(test_num=100):
-	""" We load all the three file here to save time in each epoch. """
-	train_data = pd.read_csv(
-		path + 'train.csv', 
-		sep=',', header=None, names=['user', 'item'], 
-		usecols=[0, 1], dtype={0: np.int32, 1: np.int32})
+    # 경로 설정
+    path = './dataset/'
+    
+    # 훈련 데이터 로드: user와 item 컬럼만 사용
+    train_data = pd.read_csv(
+        path + 'train.csv', 
+        sep=',', header=None, names=['user', 'item'], 
+        usecols=[0, 1], dtype={0: np.int32, 1: np.int32})
 
-	user_num = train_data['user'].max() + 1
-	item_num = train_data['item'].max() + 1
+    # 최대 user ID와 item ID를 계산하여 전체 사용자 수와 아이템 수를 파악
+    user_num = train_data['user'].max() + 1
+    item_num = train_data['item'].max() + 1
 
-	train_data = train_data.values.tolist()
+    # 리스트 형태로 데이터를 변환
+    train_data = train_data.values.tolist()
 
-	# load ratings as a dok matrix
-	train_mat = sp.dok_matrix((user_num, item_num), dtype=np.float32)
-	for x in train_data:
-		train_mat[x[0], x[1]] = 1.0
+    # 훈련 데이터를 희소 행렬 형태로 변환: user-item 행렬
+    train_mat = sp.dok_matrix((user_num, item_num), dtype=np.float32)
+    for x in train_data:
+        train_mat[x[0], x[1]] = 1.0  # 사용자-아이템 간 상호작용을 1로 설정
 
-	test_data = []
-	with open(path + 'test_neg_100.csv', 'r') as fd:
-		line = fd.readline()
-		while line != None and line != '':
-			arr = line.split('\t')
-			u = eval(arr[0])[0]
-			test_data.append([u, eval(arr[0])[1]])
-			for i in arr[1:]:
-				test_data.append([u, int(i)])
-			line = fd.readline()
-	return train_data, test_data, user_num, item_num, train_mat
+    # 테스트 데이터 로드
+    test_data = []
+    with open(path + 'test_neg_100.csv', 'r') as fd:
+        line = fd.readline()
+        while line != None and line != '':
+            arr = line.split('\t')
+            u = eval(arr[0])[0]  # 사용자 ID
+            test_data.append([u, eval(arr[0])[1]])  # 긍정적 아이템 샘플
+            for i in arr[1:]:
+                test_data.append([u, int(i)])  # 부정적 아이템 샘플 추가
+            line = fd.readline()
 
+    return train_data, test_data, user_num, item_num, train_mat
 
+# BPR 데이터셋 클래스: PyTorch의 Dataset을 상속받아 사용자 정의 데이터셋 생성
 class BPRData(data.Dataset):
-	def __init__(self, features, 
-				num_item, train_mat=None, num_ng=0, is_training=None):
-		super(BPRData, self).__init__()
-		""" Note that the labels are only useful when training, we thus 
-			add them in the ng_sample() function.
-		"""
-		self.features = features
-		self.num_item = num_item
-		self.train_mat = train_mat
-		self.num_ng = num_ng
-		self.is_training = is_training
+    def __init__(self, features, num_item, train_mat=None, num_ng=0, is_training=None):
+        super(BPRData, self).__init__()
+        self.features = features  # 원본 데이터
+        self.num_item = num_item  # 전체 아이템 수
+        self.train_mat = train_mat  # 훈련 데이터의 희소 행렬
+        self.num_ng = num_ng  # 부정적 샘플의 수
+        self.is_training = is_training  # 훈련 모드 여부
 
-	def ng_sample(self):
-		assert self.is_training, 'no need to sampling when testing'
+    # 부정적 샘플링 수행 함수
+    def ng_sample(self):
+        assert self.is_training, 'no need to sampling when testing'
+        self.features_fill = []
+        for x in self.features:
+            u, i = x[0], x[1]
+            for t in range(self.num_ng):
+                j = np.random.randint(self.num_item)
+                while (u, j) in self.train_mat:
+                    j = np.random.randint(self.num_item)
+                self.features_fill.append([u, i, j])  # 사용자, 긍정적 아이템, 부정적 아이템
 
-		self.features_fill = []
-		for x in self.features:
-			u, i = x[0], x[1]
-			for t in range(self.num_ng):
-				j = np.random.randint(self.num_item)
-				while (u, j) in self.train_mat:
-					j = np.random.randint(self.num_item)
-				self.features_fill.append([u, i, j])
+    # 데이터셋 크기 반환
+    def __len__(self):
+        return self.num_ng * len(self.features) if self.is_training else len(self.features)
 
-	def __len__(self):
-		return self.num_ng * len(self.features) if \
-				self.is_training else len(self.features)
+    # 데이터셋 요소 접근 함수
+    def __getitem__(self, idx):
+        features = self.features_fill if self.is_training else self.features
+        user = features[idx][0]
+        item_i = features[idx][1]
+        item_j = features[idx][2] if self.is_training else features[idx][1]
+        return user, item_i, item_j  # 사용자, 긍정적 아이템, 부정적 아이템 반환
 
-	def __getitem__(self, idx):
-		features = self.features_fill if \
-				self.is_training else self.features
-
-		user = features[idx][0]
-		item_i = features[idx][1]
-		item_j = features[idx][2] if \
-				self.is_training else features[idx][1]
-		return user, item_i, item_j 
-		
-
-def hit(gt_item, pred_itemes):
-	if gt_item in pred_itemes:
-		return 1
-	return 0
-
-
-def ndcg(gt_item, pred_itemes):
-	if gt_item in pred_itemes:
-		index = pred_itemes.index(gt_item)
-		return np.reciprocal(np.log2(index+2))
-	return 0
-
-
-def metrics(model, test_loader, top_k):
-	HR, NDCG = [], []
-
-	for user, item_i, item_j in test_loader:
-		user = user.cuda()
-		item_i = item_i.cuda()
-		item_j = item_j.cuda() # not useful when testing
-
-		prediction_i, prediction_j = model(user, item_i, item_j)
-		_, indices = torch.topk(prediction_i, top_k)
-		recommends = torch.take(
-				item_i, indices).cpu().numpy().tolist()
-
-		gt_item = item_i[0].item()
-		HR.append(hit(gt_item, recommends))
-		NDCG.append(ndcg(gt_item, recommends))
-
-	return np.mean(HR), np.mean(NDCG)
-
-
-
+# BPR 모델 정의 클래스: PyTorch의 Module을 상속받아 모델 정의
 class BPR(nn.Module):
-	def __init__(self, user_num, item_num, factor_num):
-		super(BPR, self).__init__()
-		"""
-		user_num: number of users;
-		item_num: number of itemes;
-		factor_num: number of predictive factors.
-		"""		
-		self.embed_user = nn.Embedding(user_num, factor_num)
-		self.embed_item = nn.Embedding(item_num, factor_num)
+    def __init__(self, user_num, item_num, factor_num):
+        super(BPR, self).__init__()
+        self.embed_user = nn.Embedding(user_num, factor_num)  # 사용자 임베딩
+        self.embed_item = nn.Embedding(item_num, factor_num)  # 아이템 임베딩
 
-		nn.init.normal_(self.embed_user.weight, std=0.01)
-		nn.init.normal_(self.embed_item.weight, std=0.01)
+        # 임베딩 가중치 초기화
+        nn.init.normal_(self.embed_user.weight, std=0.01)
+        nn.init.normal_(self.embed_item.weight, std=0.01)
 
-	def forward(self, user, item_i, item_j):
-		user = self.embed_user(user)
-		item_i = self.embed_item(item_i)
-		item_j = self.embed_item(item_j)
-
-		prediction_i = (user * item_i).sum(dim=-1)
-		prediction_j = (user * item_j).sum(dim=-1)
-		return prediction_i, prediction_j
+    # 순전파 함수
+    def forward(self, user, item_i, item_j):
+        user = self.embed_user(user)
+        item_i = self.embed_item(item_i)
+        item_j = self.embed_item(item_j)
+        prediction_i = (user * item_i).sum(dim=-1)  # 긍정적 예측
+        prediction_j = (user * item_j).sum(dim=-1)  # 부정적 예측
+        return prediction_i, prediction_j
 
 
 
@@ -270,7 +193,7 @@ if __name__ == '__main__':
 			loss = - (prediction_i - prediction_j).sigmoid().log().sum()
 			loss.backward()
 			optimizer.step()
-			# writer.add_scalar('data/loss', loss.item(), count)
+			# writer.add_scalar('data\\loss', loss.item(), count)
 			count += 1
 
 		model.eval()
