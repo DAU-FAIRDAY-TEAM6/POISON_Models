@@ -308,57 +308,57 @@ class Yelp(Dataset):
             K (int): K 값, 즉 각 사용자마다 테스트에 사용되는 상호작용의 수.
         """
         path = 'dataset/'
-        user_history_list, _, _, user_review_embeds ,_,_,_,poi_review_embeds = dp.get_data(path)
+        user_history_list, _,_,user_review_embs,_,_,_,poi_review_embeds = get_data(path)
 
-        self.train = [] 
+        self.train = []
         self.test = []
         self.history_list = user_history_list
+        self.user_review_embs = torch.tensor(user_review_embs)
         self.poi_review_embeds = torch.tensor(poi_review_embeds)
-        self.user_review_embeds = torch.tensor(user_review_embeds)
         self.num_user = len(user_history_list)
         self.num_item = len(poi_review_embeds) # 14585
 
         items = [i for i in range(self.num_item)]
         self.neg = dict()
-        
-        random.seed(30)
+
         for u, hist in enumerate(user_history_list):
-            random.shuffle(hist)
+            np.random.shuffle(hist)
             self.train.append(hist[:int(len(hist) * 0.7)])
             self.test.append(hist[int(len(hist) * 0.7) :])
-            
-            u_negs = set(items) - set(hist) 
+
+            u_negs = set(items) - set(hist)
             self.neg[u] = list(u_negs) # ng dataset 생성
-        
-        self.test_for_eval = []
-        for u,hist in enumerate(self.test):
-            for i in hist:
-                self.test_for_eval.append([u,i])
+
+        # 모든 positive 아이템과 그에 대응하는 인덱스를 저장
+        self.index_map = []
+        for u, user_items in enumerate(self.train):
+            for i in user_items:
+                self.index_map.append((u, i))
 
     def __len__(self):
         """
         데이터셋의 사용자 수를 반환합니다.
         """
-        return self.num_user
+        # return self.num_user
+        return len(self.index_map)
 
     def __getitem__(self, idx):
         """
-        데이터셋에서 하나의 샘플을 가져옵니다.
+        데이터셋에서 하나의 사용자에 대한 모든 긍정적인 아이템과 대응하는 부정적인 아이템을 가져옵니다.
 
         Args:
-            idx (int): 데이터셋 내의 인덱스.
+            idx (int): 데이터셋 내의 사용자 인덱스.
 
         Returns:
-            u: 사용자 ID.
-            i: 긍정적인 아이템 ID.
-            j: 부정적인 아이템 ID.
+            samples: [(u, i, j), (u, i, j), ..., (u, i, j)] 형태의 리스트, 여기서
+                u: 사용자 ID (인덱스)
+                i: 긍정적인 아이템 ID
+                j: 부정적인 아이템 ID
         """
-        u = idx
-        # 사용자별로 하나의 긍정적인 상호작용 선택
-        i = self.train[u][np.random.randint(0, len(self.train[u]))]
-        # 부정적인 상호작용 무작위 선택
+
+        u, i = self.index_map[idx]
+        # 부정적인 아이템 무작위 선택
         j = self.neg[u][np.random.randint(0, len(self.neg[u]))]
-        #j = random.sample(self.neg[u], 4)
         return (u, i, j)
 
 def evaluate_model(model, test, K):
