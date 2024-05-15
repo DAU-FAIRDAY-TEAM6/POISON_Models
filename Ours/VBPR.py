@@ -87,7 +87,7 @@ class TextBPR(nn.Module):
         '''
         user_latent_factor = self.embed_user(u) # batch * latent
         #user_text_factors = self.embed_user_Text(u) # batch * latent
-        user_text_factors = self.user_review_embeds[u] / math.sqrt(786)
+        user_text_factors = self.user_review_embeds[u] #/ math.sqrt(786)
         
         i_bias = self.beta_items(i) # batch * 1
         j_bias = self.beta_items(j) # batch * 1
@@ -100,7 +100,7 @@ class TextBPR(nn.Module):
         
         
         diff_latent_factors = i_latent_factors - j_latent_factors # batch * latent
-        diff_text_factors = (i_text_factors - j_text_factors) / math.sqrt(768) # batch * 768
+        diff_text_factors = (i_text_factors - j_text_factors) #/ math.sqrt(768) # batch * 768
 
         #latent_matrix = (user_latent_factor * diff_latent_factors).sum(dim=-1).unsqueeze(-1) 
         #text_matrix = (user_text_factors.mm(self.E_u.weight) * diff_text_factors.mm(self.E1.weight)).sum(dim=-1).unsqueeze(-1)
@@ -113,10 +113,10 @@ class TextBPR(nn.Module):
             diff_latent_factors = diff_latent_factors.unsqueeze(0) # [ 1, latent_emb]
             
         text_bias = diff_text_factors.mm(self.text_bias.weight)
-        user_factors = torch.cat((user_latent_factor, user_text_factors), dim=1)
-        item_factors = torch.cat((diff_latent_factors, diff_text_factors), dim=1)
-        #user_factors = torch.cat((user_latent_factor, user_text_factors.mm(self.E_u.weight)), dim=1)
-        #item_factors = torch.cat((diff_latent_factors, diff_text_factors.mm(self.E1.weight)), dim=1)
+        #user_factors = torch.cat((user_latent_factor, user_text_factors), dim=1)
+        #item_factors = torch.cat((diff_latent_factors, diff_text_factors), dim=1)
+        user_factors = torch.cat((user_latent_factor, user_text_factors.mm(self.E_u.weight)), dim=1)
+        item_factors = torch.cat((diff_latent_factors, diff_text_factors.mm(self.E1.weight)), dim=1)
         u_i_score = (user_factors    * item_factors).sum(dim=-1).unsqueeze(-1)
         
         #x_uij = i_bias - j_bias + latent_matrix + text_matrix + text_bias
@@ -144,17 +144,18 @@ class TextBPR(nn.Module):
             self.train()
             iter_loss = 0
             count = 0
-            for s, (users, items_pos, items_neg) in enumerate(data_loader):
+            for s, (users, items_pos, items_negs) in enumerate(data_loader):
                 count += 1
                 # 기울기 초기화
                 self.mf_optim.zero_grad()
                 # Forward pass를 통해 예측과 손실 계산
-                users = users.to(DEVICE)
-                items_pos = items_pos.to(DEVICE)
-                items_neg = items_neg.to(DEVICE)
-                
-                loss = self.forward(users, items_pos, items_neg)
-                iter_loss += loss.item()
+                for items_neg in items_negs:
+                    users = users.to(DEVICE)
+                    items_pos = items_pos.to(DEVICE)
+                    items_neg = items_neg.to(DEVICE)
+                    
+                    loss = self.forward(users, items_pos, items_neg)
+                    iter_loss += loss.item()
                 # Backward pass 및 파라미터 업데이트
                 loss.backward()
                 self.mf_optim.step()
@@ -170,7 +171,7 @@ class TextBPR(nn.Module):
                     eval_loss += loss.item()
                 total_samples = len(self.test_for_eval)
                 eval_loss = eval_loss / total_samples if total_samples > 0 else 0
-                iter_loss = iter_loss / count
+                iter_loss = iter_loss / count / batch_size
                 print(f"epoch={epoc}, train_loss = {iter_loss:.6}, test_loss = {eval_loss:.6}[{t2-t1:.2}s] HitRatio@{topK} = {hits:.6}, RECAll@{topK} = {recall:.6}, PRECISION@{topK} = {precision:.6} [{time.time()-t2:.1}s]")
                 if precision > max_precision:
                     max_precision = precision
@@ -195,17 +196,17 @@ class TextBPR(nn.Module):
             item_latent_factors = self.embed_item.weight # batch * latent
             
             #user_text_factors = self.embed_user_Text.weight # batch * latent
-            user_text_factors = self.user_review_embeds / math.sqrt(768) # batch * latent
-            item_text_factors = self.poi_review_embeds / math.sqrt(768)# batch * 768
+            user_text_factors = self.user_review_embeds #/ math.sqrt(768) # batch * latent
+            item_text_factors = self.poi_review_embeds #/ math.sqrt(768)# batch * 768
             
             #score_matrix = (torch.mm(user_latent_factor, item_latent_factors.t()) + torch.mm(user_text_factors.mm(self.E_u.weight), item_text_factors.mm(self.E1.weight).t()))
             #score_matrix = (torch.mm(user_latent_factor, item_latent_factors.t()) + torch.mm(user_text_factors.mm(self.E_u.weight), self.E2(item_text_factors).t()))
             #score_matrix = (torch.mm(user_latent_factor, item_latent_factors.t()) + torch.mm(user_text_factors, item_text_factors.t()))
             
-            user_factors = torch.cat((user_latent_factor, user_text_factors), dim=1)
-            item_factors = torch.cat((item_latent_factors, item_text_factors), dim=1)
-            #user_factors = torch.cat((user_latent_factor, user_text_factors.mm(self.E_u.weight)), dim=1)
-            #item_factors = torch.cat((item_latent_factors, item_text_factors.mm(self.E1.weight)), dim=1)
+            #user_factors = torch.cat((user_latent_factor, user_text_factors), dim=1)
+            #item_factors = torch.cat((item_latent_factors, item_text_factors), dim=1)
+            user_factors = torch.cat((user_latent_factor, user_text_factors.mm(self.E_u.weight)), dim=1)
+            item_factors = torch.cat((item_latent_factors, item_text_factors.mm(self.E1.weight)), dim=1)
             score_matrix = torch.mm(user_factors, item_factors.t())
             ########
             top_scores, top_indicies = torch.topk(score_matrix, K, dim=1)
@@ -301,15 +302,16 @@ class MFbpr(nn.Module):
         for epoc in range(epoch):
             iter_loss = 0
             count = 0
-            for s, (users, items_pos, items_neg) in enumerate(data_loader):
+            for s, (users, items_pos, items_negs) in enumerate(data_loader):
                 count += 1
                 # 기울기 초기화
                 self.mf_optim.zero_grad()
                 # Forward pass를 통해 예측과 손실 계산
-                y_ui, y_uj, loss = self.forward(users, items_pos, items_neg)
-                iter_loss += loss
-                # Backward pass 및 파라미터 업데이트
-                loss.backward()
+                for items_neg in items_negs:
+                    y_ui, y_uj, loss = self.forward(users, items_pos, items_neg)
+                    iter_loss += loss 
+                    # Backward pass 및 파라미터 업데이트
+                    loss.backward()
                 self.mf_optim.step()
             t2 = time.time()
             
@@ -318,11 +320,11 @@ class MFbpr(nn.Module):
                 hits, recall, precision = self.evaluate_model(self.test_data, topK)
                 eval_loss = 0
                 for idx, (u, i, j) in enumerate(self.test_for_eval):
-                    loss = self.forward(u, i, j)
-                    eval_loss += loss.item()
+                    y_ui, y_uj, loss = self.forward(u, i, j)
+                    eval_loss += loss
                 total_samples = len(self.test_for_eval)
                 eval_loss = eval_loss / total_samples if total_samples > 0 else 0
-                iter_loss = iter_loss / count
+                iter_loss = iter_loss / count / batch_size
                 print(f"epoch={epoc}, train_loss = {iter_loss:.6}, test_loss = {eval_loss:.6}[{t2-t1:.2}s] HitRatio@{topK} = {hits:.6}, RECAll@{topK} = {recall:.6}, PRECISION@{topK} = {precision:.6} [{time.time()-t2:.1}s]")
                 t1 = time.time()
                 if precision > max_precision:
@@ -430,8 +432,8 @@ class Yelp(Dataset):
         # 사용자별로 하나의 긍정적인 상호작용 선택
         i = self.train[u][np.random.randint(0, len(self.train[u]))]
         # 부정적인 상호작용 무작위 선택
-        j = self.neg[u][np.random.randint(0, len(self.neg[u]))]
-        #j = random.sample(self.neg[u], 4)
+        #j = self.neg[u][np.random.randint(0, len(self.neg[u]))]
+        j = random.sample(self.neg[u], 4)
         return (u, i, j)
     
         # u, i = self.index_map[idx]
