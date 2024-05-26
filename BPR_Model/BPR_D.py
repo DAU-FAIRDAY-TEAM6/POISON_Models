@@ -22,7 +22,7 @@ def load_all(test_num=100):
 
     poi_data = pd.read_csv(
         path + 'poi.csv', 
-        sep=',', header=None, names=['item', 'lat', 'lon'], 
+        sep='\t', header=None, names=['item', 'lat', 'lon'], 
         usecols=[0, 1, 2], dtype={0: np.int32, 1: np.float32, 2: np.float32})
 
     user_num = train_data['user'].max() + 1
@@ -131,44 +131,25 @@ def ndcg(gt_item, pred_items):
 	return 0
 
 
-# def metrics(model, test_loader, top_k):
-# 	HR, NDCG = [], []
+def metrics(model, test_loader, distance_ij, top_k):
+    HR, NDCG = [], []
 
-# 	for user, item_i, item_j in test_loader:
-# 		user = user.cuda()
-# 		item_i = item_i.cuda()
-# 		item_j = item_j.cuda() # not useful when testing
+    for user, item_i, item_j in test_loader:
+        user = user.cuda()
+        item_i = item_i.cuda()
+        item_j = item_j.cuda()
+        distance_ij = distance_ij.cuda()
 
-# 		prediction_i, prediction_j = model(user, item_i, item_j)
-# 		_, indices = torch.topk(prediction_i, top_k)
-# 		recommends = torch.take(
-# 				item_i, indices).cpu().numpy().tolist()
+        prediction_i, prediction_j, distance_ij = model(user, item_i, item_j, distance_ij)
+        _, indices = torch.topk(prediction_i, top_k)
+        recommends = torch.take(
+                item_i, indices).cpu().numpy().tolist()
 
-# 		gt_item = item_i[0].item()
-# 		HR.append(hit(gt_item, recommends))
-# 		NDCG.append(ndcg(gt_item, recommends))
+        gt_item = item_i[0].item()
+        HR.append(hit(gt_item, recommends))
+        NDCG.append(ndcg(gt_item, recommends))
 
-# 	return np.mean(HR), np.mean(NDCG)
-
-def metrics(model, test_loader, top_k):
-	HR, NDCG = [], []
-
-	for user, item_i, item_j in test_loader:
-		user = user
-		item_i = item_i
-		item_j = item_j# not useful when testing
-
-		prediction_i, prediction_j = model(user, item_i, item_j)
-		_, indices = torch.topk(prediction_i, top_k)
-		recommends = torch.take(
-				item_i, indices).numpy().tolist()
-
-		gt_item = item_i[0].item()
-		HR.append(hit(gt_item, recommends))
-		NDCG.append(ndcg(gt_item, recommends))
-
-	return np.mean(HR), np.mean(NDCG)
-
+    return np.mean(HR), np.mean(NDCG)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -184,7 +165,6 @@ if __name__ == '__main__':
     parser.add_argument("--gpu", type=str, default="0", help="gpu card ID")
     args = parser.parse_args()
 
-    print(1)
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
     cudnn.benchmark = True
 
@@ -222,7 +202,7 @@ if __name__ == '__main__':
             count += 1
 
         model.eval()
-        HR, NDCG = metrics(model, test_loader, args.top_k)
+        HR, NDCG = metrics(model, test_loader, distance_ij, args.top_k)
 
         elapsed_time = time.time() - start_time
         print("The time elapse of epoch {:03d}".format(epoch) + " is: " + 
