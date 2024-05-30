@@ -3,7 +3,7 @@ class TextBPR(nn.Module):
     '''
     MF 모델에 대한 BPR 학습 
     '''
-    def __init__(self, dataset, factors, text_factors, learning_rate, reg, init_mean, init_stdev):
+    def __init__(self, dataset, factors, text_factors, learning_rate, reg, init_mean, init_stdev, alpha):
         '''
         생성자
         Args:
@@ -28,6 +28,7 @@ class TextBPR(nn.Module):
         self.reg = reg
         self.init_mean = init_mean
         self.init_stdev = init_stdev
+        self.alpha = alpha
 
         self.user_review_embeds = dataset.user_review_embeds
         self.poi_review_embeds = dataset.poi_review_embeds
@@ -79,10 +80,10 @@ class TextBPR(nn.Module):
             diff_text_factors = diff_text_factors.unsqueeze(0) # [1, text_emb]
             diff_latent_factors = diff_latent_factors.unsqueeze(0) # [ 1, latent_emb]
         
-        user_factors = torch.cat((user_latent_factor, user_text_factors), dim=1)
-        item_factors = torch.cat((diff_latent_factors, diff_text_factors), dim=1)
+        latent_factor = (user_latent_factor * diff_latent_factors).sum(dim=-1).unsqueeze(-1)
+        text_factor = (user_text_factors * diff_text_factors).sum(dim=-1).unsqueeze(-1)
         
-        u_i_score = (user_factors * item_factors).sum(dim=-1).unsqueeze(-1)
+        u_i_score = self.alpha * latent_factor + (1-self.alpha) * text_factor
         text_bias = diff_text_factors.mm(self.text_bias)
         
         x_uij = i_bias - j_bias + u_i_score + text_bias
@@ -146,7 +147,7 @@ class TextBPR(nn.Module):
                     max_hit_epoch = epoc
                 t1 = time.time()
                 
-        save_perform(reg, batch_size, latent_factors, text_factors, epoc, learning_rate, max_hit, max_hit_epoch, max_recall, max_recall_epoch, max_precision, max_precision_epoch)
+        save_perform(reg, batch_size, latent_factors, text_factors, epoc, learning_rate, max_hit, max_hit_epoch, max_recall, max_recall_epoch, max_precision, max_precision_epoch, alpha)
     
     
     def evaluate_model(self, test, K):
@@ -160,10 +161,12 @@ class TextBPR(nn.Module):
         user_text_factors = self.user_review_embeds / math.sqrt(768) # batch * latent
         item_text_factors = self.poi_review_embeds / math.sqrt(768)# batch * 768
             
-        user_factors = torch.cat((user_latent_factor, user_text_factors), dim=1)
-        item_factors = torch.cat((item_latent_factors, item_text_factors), dim=1)
-            
-        score_matrix = torch.mm(user_factors, item_factors.t())
+
+        latent_score_matrix = torch.mm(user_latent_factor, item_latent_factors.t())
+        text_score_matrix = torch.mm(user_text_factors, item_text_factors.t())
+        
+        score_matrix = self.alpha * latent_score_matrix + (1-self.alpha) * text_score_matrix
+        
         item_bias = self.beta_items.squeeze()
         item_bias = item_bias.view(1, -1)
         score_matrix = score_matrix + item_bias
@@ -288,7 +291,7 @@ if __name__ == '__main__':
     reg = args.reg  # 정규화 계수
     epoch = args.epoch
     batch_size = args.batch_size  # 미니배치 크기
-    
+    alpha = args.alpha
     init_mean = 0  # 초기 가중치 평균
     init_stdev = 0.001  # 초기 가중치 표준편차
     
@@ -298,7 +301,7 @@ if __name__ == '__main__':
     print("#factors: %d, lr: %f, reg: %f, batch_size: %d" % (latent_factors, learning_rate, reg, batch_size))
     
     # MF-BPR 모델 생성 및 학습  
-    text_bpr = TextBPR(yelp, latent_factors, text_factors, learning_rate, reg, init_mean, init_stdev )
+    text_bpr = TextBPR(yelp, latent_factors, text_factors, learning_rate, reg, init_mean, init_stdev, alpha)
     text_bpr.build_model(epoch, batch_size=batch_size, topK = K)
 
     # 학습된 가중치 저장
