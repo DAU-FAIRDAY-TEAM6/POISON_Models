@@ -1,0 +1,40 @@
+The time elapse of epoch 000 is: 00:01:11
+HR: 0.105	NDCG: 0.048
+The time elapse of epoch 001 is: 00:01:11
+HR: 0.147	NDCG: 0.076
+The time elapse of epoch 002 is: 00:01:11
+HR: 0.382	NDCG: 0.238
+The time elapse of epoch 003 is: 00:01:11
+HR: 0.615	NDCG: 0.373
+The time elapse of epoch 004 is: 00:01:11
+HR: 0.647	NDCG: 0.383
+The time elapse of epoch 005 is: 00:01:12
+HR: 0.644	NDCG: 0.368
+The time elapse of epoch 006 is: 00:01:11
+HR: 0.639	NDCG: 0.355
+The time elapse of epoch 007 is: 00:01:11
+HR: 0.635	NDCG: 0.344
+The time elapse of epoch 008 is: 00:01:11
+HR: 0.632	NDCG: 0.336
+The time elapse of epoch 009 is: 00:01:11
+HR: 0.628	NDCG: 0.330
+The time elapse of epoch 010 is: 00:01:11
+HR: 0.624	NDCG: 0.326
+The time elapse of epoch 011 is: 00:01:11
+HR: 0.620	NDCG: 0.324
+The time elapse of epoch 012 is: 00:01:11
+HR: 0.619	NDCG: 0.324
+The time elapse of epoch 013 is: 00:01:11
+HR: 0.616	NDCG: 0.322
+The time elapse of epoch 014 is: 00:01:11
+HR: 0.616	NDCG: 0.322
+The time elapse of epoch 015 is: 00:01:11
+HR: 0.615	NDCG: 0.323
+The time elapse of epoch 016 is: 00:01:11
+HR: 0.615	NDCG: 0.323
+The time elapse of epoch 017 is: 00:01:11
+HR: 0.616	NDCG: 0.323
+The time elapse of epoch 018 is: 00:01:11
+HR: 0.619	NDCG: 0.325
+The time elapse of epoch 019 is: 00:01:11
+HR: 0.618	NDCG: 0.326
