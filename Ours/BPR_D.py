@@ -27,7 +27,7 @@ def load_all(test_num=100):
 
     user_num = train_data['user'].max() + 1
     item_num = train_data['item'].max() + 1
-
+   
     train_data = train_data.values.tolist()
     poi_data = poi_data.set_index('item').values
 
@@ -156,7 +156,7 @@ if __name__ == '__main__':
     parser.add_argument("--lr", type=float, default=0.05, help="learning rate")
     parser.add_argument("--lamda", type=float, default=0.005, help="model regularization rate")
     parser.add_argument("--batch_size", type=int, default=4096, help="batch size for training")
-    parser.add_argument("--epochs", type=int, default=30, help="training epoches")
+    parser.add_argument("--epochs", type=int, default=300, help="training epoches")
     parser.add_argument("--top_k", type=int, default=10, help="compute metrics@top_k")
     parser.add_argument("--factor_num", type=int, default=32, help="predictive factors numbers in the model")
     parser.add_argument("--num_ng", type=int, default=4, help="sample negative itemes for training")
@@ -164,6 +164,8 @@ if __name__ == '__main__':
     parser.add_argument("--out", default=True, help="save model or not")
     parser.add_argument("--gpu", type=str, default="0", help="gpu card ID")
     args = parser.parse_args()
+
+    print("Start_D")
 
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
     cudnn.benchmark = True
@@ -177,57 +179,50 @@ if __name__ == '__main__':
     train_loader = data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
     test_loader = data.DataLoader(test_dataset, batch_size=args.test_num_ng+1, shuffle=False, num_workers=0)
 
+    model = BPR(user_num, item_num, args.factor_num)
+    model.cuda()
 
-    batch_size_values = [256, 512, 1024, 2048, 4096, 8192]
+    optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.lamda)
 
-    for batch_size in batch_size_values:
-        print(f"\nTraining with learning rate: {batch_size}")
-        log_filename = f"training_log_d_batch_size{batch_size}.txt"
-        args.batch_size = batch_size
-        with open(log_filename, 'w') as f:
-            model = BPR(user_num, item_num, args.factor_num)
-            model.cuda()
+    count, best_hr = 0, 0
+    with open('training_log_D_300.txt', 'w') as f:
+        for epoch in range(args.epochs):
+            model.train()
+            start_time = time.time()
+            train_loader.dataset.ng_sample()
 
-            optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.lamda)
+            for user, item_i, item_j in train_loader:
+                user = user.cuda()
+                item_i = item_i.cuda()
+                item_j = item_j.cuda()
+                distance_ij = torch.tensor([norm_distances[i, j] for i, j in zip(item_i.cpu().numpy(), item_j.cpu().numpy())]).cuda()
 
-            count, best_hr = 0, 0
-            for epoch in range(args.epochs):
-                model.train()
-                start_time = time.time()
-                train_loader.dataset.ng_sample()
+                model.zero_grad()
+                prediction_i, prediction_j, distance_ij = model(user, item_i, item_j, distance_ij)
+                loss = - (distance_ij * (prediction_i - prediction_j)).sigmoid().log().sum()
+                loss.backward()
+                optimizer.step()
+                count += 1
 
-                for user, item_i, item_j in train_loader:
-                    user = user.cuda()
-                    item_i = item_i.cuda()
-                    item_j = item_j.cuda()
-                    distance_ij = torch.tensor([norm_distances[i, j] for i, j in zip(item_i.cpu().numpy(), item_j.cpu().numpy())]).cuda()
+            model.eval()
+            HR, NDCG = metrics(model, test_loader, distance_ij, args.top_k)
 
-                    model.zero_grad()
-                    prediction_i, prediction_j, distance_ij = model(user, item_i, item_j, distance_ij)
-                    loss = - (distance_ij * (prediction_i - prediction_j)).sigmoid().log().sum()
-                    loss.backward()
-                    optimizer.step()
-                    count += 1
+            elapsed_time = time.time() - start_time
+            # print("The time elapse of epoch {:03d}".format(epoch) + " is: " + 
+            #         time.strftime("%H: %M: %S", time.gmtime(elapsed_time)))
+            # print("HR: {:.3f}\tNDCG: {:.3f}".format(np.mean(HR), np.mean(NDCG)))
 
-                model.eval()
-                HR, NDCG = metrics(model, test_loader, distance_ij, args.top_k)
+            epoch_time_str = ("The time elapse of epoch {:03d}".format(epoch) + " is: " + 
+                                                    time.strftime("%H:%M:%S", time.gmtime(elapsed_time)))
+            metrics_str = ("HR: {:.3f}\tNDCG: {:.3f}".format(np.mean(HR), np.mean(NDCG)))
 
-                elapsed_time = time.time() - start_time
-                # print("The time elapse of epoch {:03d}".format(epoch) + " is: " + 
-                #         time.strftime("%H: %M: %S", time.gmtime(elapsed_time)))
-                # print("HR: {:.3f}\tNDCG: {:.3f}".format(np.mean(HR), np.mean(NDCG)))
-
-                epoch_time_str = ("The time elapse of epoch {:03d}".format(epoch) + " is: " + 
-                                                        time.strftime("%H:%M:%S", time.gmtime(elapsed_time)))
-                metrics_str = ("HR: {:.3f}\tNDCG: {:.3f}".format(np.mean(HR), np.mean(NDCG)))
-
-                # 출력
-                print(epoch_time_str)
-                print(metrics_str)
-                
-                # 파일에 기록
-                f.write(epoch_time_str + "\n")
-                f.write(metrics_str + "\n")
+            # 출력
+            print(epoch_time_str)
+            print(metrics_str)
+            
+            # 파일에 기록
+            f.write(epoch_time_str + "\n")
+            f.write(metrics_str + "\n")
 
     
 
