@@ -1,6 +1,7 @@
 import numpy as np 
 import pandas as pd 
 import scipy.sparse as sp
+from scipy.spatial.distance import pdist, squareform
 
 import os
 import time
@@ -12,8 +13,9 @@ import torch.optim as optim
 import torch.utils.data as data
 import torch.backends.cudnn as cudnn
 
+
 def load_all(test_num=100):
-    path = './BPR_Model/dataset/'
+    path = './DBPR/'
     
     train_data = pd.read_csv(
         path + 'train.csv', 
@@ -51,18 +53,14 @@ def load_all(test_num=100):
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371
     dlat = np.radians(lat2 - lat1)
-    dlon = np.radians(lon2 - lon1)
+    dlon = np.radians(lon1 - lon2)  # Note the change here
     a = np.sin(dlat / 2) ** 2 + np.cos(np.radians(lat1)) * np.cos(np.radians(lat2)) * np.sin(dlon / 2) ** 2
     c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
     d = R * c
     return d
 
 def calculate_distances(poi_data):
-    item_num = poi_data.shape[0]
-    distances = np.zeros((item_num, item_num))
-    for i in range(item_num):
-        for j in range(item_num):
-            distances[i, j] = haversine(poi_data[i, 0], poi_data[i, 1], poi_data[j, 0], poi_data[j, 1])
+    distances = squareform(pdist(poi_data, lambda u, v: haversine(u[0], u[1], v[0], v[1])))
     return distances
 
 def normalize_distances(distances):
@@ -132,22 +130,32 @@ def ndcg(gt_item, pred_items):
 
 
 def metrics(model, test_loader, top_k):
-    HR, NDCG = [], []
+    HR, Recall, Precision = [], [], []
 
+    # 모든 사용자와 아이템에 대한 예측 점수 행렬을 계산
+    score_matrix = torch.mm(model.embed_user.weight, model.embed_item.weight.t())
+    top_scores, top_indices = torch.topk(score_matrix, top_k, dim=1)
+
+    # 테스트 데이터의 각 사용자에 대해 평가
     for user, item_i, item_j in test_loader:
-        user = user.cuda()
-        item_i = item_i.cuda()
-        item_j = item_j.cuda()
+        user = user[0].item()
+        item_i = item_i[0].item()
 
-        prediction_i, prediction_j = model(user, item_i, item_j)
-        _, indices = torch.topk(prediction_i, top_k)
-        recommends = torch.take(item_i, indices).cpu().numpy().tolist()
+        set_topk = set(top_indices[user].cpu().numpy())
+        set_hist = {item_i}
 
-        gt_item = item_i[0].item()
-        HR.append(hit(gt_item, recommends))
-        NDCG.append(ndcg(gt_item, recommends))
+        # Hit Ratio 계산
+        hits = len(set_hist & set_topk)
+        HR.append(hits)
 
-    return np.mean(HR), np.mean(NDCG)
+        # Recall 계산
+        Recall.append(len(set_hist & set_topk) / len(set_hist))
+
+        # Precision 계산
+        Precision.append(len(set_hist & set_topk) / len(set_topk))
+
+    return np.mean(HR), np.mean(Recall), np.mean(Precision)
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -167,11 +175,12 @@ if __name__ == '__main__':
 
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
     cudnn.benchmark = True
-
+    start_time = time.time()
     train_data, test_data, user_num, item_num, train_mat, poi_data = load_all()
     distances = calculate_distances(poi_data)
     norm_distances = normalize_distances(distances)
-
+    print ("거리 데이터 완료: ", int(time.time() - start_time), "초")
+    
     train_dataset = BPRData(train_data, item_num, train_mat, args.num_ng, True)
     test_dataset = BPRData(test_data, item_num, train_mat, 0, False)
     train_loader = data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
@@ -203,13 +212,12 @@ if __name__ == '__main__':
                 count += 1
 
             model.eval()
-            HR, NDCG = metrics(model, test_loader, args.top_k)
+            HR, Recall, Precision = metrics(model, test_loader, args.top_k)
 
             elapsed_time = time.time() - start_time
 
-            epoch_time_str = ("The time elapse of epoch {:03d}".format(epoch) + " is: " + 
-                                                    time.strftime("%H:%M:%S", time.gmtime(elapsed_time)))
-            metrics_str = ("HR: {:.3f}\tNDCG: {:.3f}".format(np.mean(HR), np.mean(NDCG)))
+            epoch_time_str = "The time elapse of epoch {:03d}".format(epoch) + " is: " + time.strftime("%H:%M:%S", time.gmtime(elapsed_time))
+            metrics_str = "HR: {:.3f}\tRecall: {:.3f}\tPrecision: {:.3f}".format(np.mean(HR), np.mean(Recall), np.mean(Precision))
 
             # 출력
             print(epoch_time_str)
@@ -218,5 +226,3 @@ if __name__ == '__main__':
             # 파일에 기록
             f.write(epoch_time_str + "\n")
             f.write(metrics_str + "\n")
-
-    
