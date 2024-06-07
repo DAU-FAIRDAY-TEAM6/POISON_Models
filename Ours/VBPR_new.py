@@ -103,8 +103,8 @@ class TextBPR(nn.Module):
         '''
         data_loader = DataLoader(self.dataset, batch_size=batch_size)
 
-        print("Training MF-BPR with: learning_rate=%.4f, regularization=%.7f, factors=%d, #epoch=%d, batch_size=%d."
-               % (self.learning_rate, self.reg, self.factors, epoch, batch_size))
+        print("Training MF-BPR with: learning_rate=%.4f, regularization=%.7f, factors=%d, #epoch=%d, batch_size=%d, alpha=%.2f."
+               % (self.learning_rate, self.reg, self.factors, epoch, batch_size, alpha))
         t1 = time.time()
         
         max_hit, max_precision, max_recall, max_recall_epoch, max_precision_epoch, max_hit_epoch = 0,0,0,0,0,0
@@ -125,16 +125,16 @@ class TextBPR(nn.Module):
             t2 = time.time()
             
             # 성능 측정 함수를 통해 HitRatio 및 NDCG를 계산
-            if epoc % 5 == 0:
+            if epoc % 1 == 0:
                 hits, recall, precision = self.evaluate_model(self.test_data, topK)
                 eval_loss = 0
-                for idx, (u, i, j) in enumerate(self.test_for_eval):
-                    loss = self.forward(u, i, j)
-                    eval_loss += loss
+                # for idx, (u, i, j) in enumerate(self.test_for_eval):
+                #     loss = self.forward(u, i, j)
+                #     eval_loss += loss
                 total_samples = len(self.test_for_eval)
                 eval_loss = eval_loss / total_samples if total_samples > 0 else 0
                 iter_loss = iter_loss / count / batch_size
-                print(f"epoch={epoc}, train_loss = {iter_loss:.6}, test_loss = {eval_loss:.6}[{t2-t1:.2}s] HitRatio@{topK} = {hits:.6}, RECAll@{topK} = {recall:.6}, PRECISION@{topK} = {precision:.6} [{time.time()-t2:.1}s]")
+                print(f"epoch={epoc}, train_loss = {iter_loss}, test_loss = {eval_loss}[{t2-t1}s] HitRatio@{topK} = {hits}, RECAll@{topK} = {recall}, PRECISION@{topK} = {precision} [{time.time()-t2}s]")
                 t1 = time.time()
                 if precision > max_precision:
                     max_precision = precision
@@ -263,7 +263,8 @@ class Yelp(Dataset):
     
         u, i = self.index_map[idx]
         # 부정적인 아이템 무작위 선택
-        j = self.neg[u][np.random.randint(0, len(self.neg[u]))]
+        j = random.sample(self.neg[u], 4)
+        #j = self.neg[u][np.random.randint(0, len(self.neg[u]))]
         return (u, i, j)
 
 
@@ -300,7 +301,7 @@ if __name__ == '__main__':
     
     print("#factors: %d, lr: %f, reg: %f, batch_size: %d" % (latent_factors, learning_rate, reg, batch_size))
     
-    # MF-BPR 모델 생성 및 학습  
+    # MF-BPR 모델 생성 및 학습
     text_bpr = TextBPR(yelp, latent_factors, text_factors, learning_rate, reg, init_mean, init_stdev, alpha)
     text_bpr.build_model(epoch, batch_size=batch_size, topK = K)
 
