@@ -1,4 +1,5 @@
 from __init__ import *
+from scipy.spatial.distance import pdist, squareform
 
 class DistBPR(nn.Module):
     '''
