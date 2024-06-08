@@ -374,7 +374,7 @@ class Yelp(Dataset):
             K (int): K 값, 즉 각 사용자마다 테스트에 사용되는 상호작용의 수.
         """
         path = 'dataset/'
-        user_history_list, _, _, user_review_embeds ,_,_,_,poi_review_embeds = dp.get_data(path)
+        user_history_list, _, _, user_review_embeds ,_,_,_,poi_review_embeds, business_location = dp.get_data(path)
 
         self.train = [] 
         self.test = []

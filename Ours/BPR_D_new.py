@@ -1,9 +1,10 @@
 from __init__ import *
-class TextBPR(nn.Module):
+
+class DistBPR(nn.Module):
     '''
-    MF 모델에 대한 BPR 학습 
+    거리(Distance)에 대한 BPR 학습
     '''
-    def __init__(self, dataset, factors, text_factors, learning_rate, reg, init_mean, init_stdev, alpha):
+    def __init__(self, dataset, factors, learning_rate, reg, init_mean, init_stdev):
         '''
         생성자
         Args:
@@ -14,39 +15,31 @@ class TextBPR(nn.Module):
             init_mean (float): 초기화에 사용되는 정규 분포의 평균.
             init_stdev (float): 초기화에 사용되는 정규 분포의 표준 편차.
         '''
-        super(TextBPR, self).__init__()
+        super(DistBPR, self).__init__()
         self.dataset = dataset
         self.train_data = dataset.train
+        self.norm_distances = dataset.norm_distances
         self.test_data = dataset.test
-        self.test_for_eval = dataset.test_for_eval
         self.num_user = dataset.num_user
         self.num_item = dataset.num_item
         self.neg = dataset.neg
         self.factors = factors
-        self.factors_Text = text_factors
         self.learning_rate = learning_rate
         self.reg = reg
         self.init_mean = init_mean
         self.init_stdev = init_stdev
-        self.alpha = alpha
 
-        self.user_review_embeds = dataset.user_review_embeds
-        self.poi_review_embeds = dataset.poi_review_embeds
-        
-        
+
         # 사용자와 아이템의 잠재 요인을 초기화합니다.
         self.embed_user = torch.normal(mean=self.init_mean * torch.ones(self.num_user, self.factors), std=self.init_stdev).to(DEVICE).requires_grad_()
         self.embed_item = torch.normal(mean=self.init_mean * torch.ones(self.num_item, self.factors), std=self.init_stdev).to(DEVICE).requires_grad_()
-        
-        self.beta_items = torch.normal(mean=self.init_mean * torch.ones(self.num_item, 1), std=self.init_stdev).to(DEVICE).requires_grad_()
-        self.text_bias = torch.normal(mean=self.init_mean * torch.ones(768, 1), std=self.init_stdev).to(DEVICE).requires_grad_()
-        
+
         # Adam optimizer를 초기화합니다.
-        self.mf_optim = optim.Adam([self.embed_user, self.embed_item, self.beta_items, self.text_bias], lr=self.learning_rate, weight_decay=1e-5)
+        self.mf_optim = optim.Adam([self.embed_user, self.embed_item], lr=self.learning_rate)
 
     def forward(self, u, i, j):
         '''
-        MF-BPR 모델의 forward pass입니다.
+        DBPR 모델의 forward pass입니다.
         Args:
             u: 사용자 ID.
             i: 긍정적인 아이템 ID.
@@ -57,45 +50,20 @@ class TextBPR(nn.Module):
             loss: BPR 손실.
         '''
         # 사용자와 긍정적인 아이템 간의 예측 점수 계산
-        
-        user_latent_factor = self.embed_user[u]
-        user_text_factors = self.user_review_embeds[u] / math.sqrt(786)
-        
-        
-        i_bias = self.beta_items[i] # batch * 1
-        j_bias = self.beta_items[j] # batch * 1
-        
-        i_text_factors = self.poi_review_embeds[i] # batch * 768
-        j_text_factors = self.poi_review_embeds[j] # batch * 768
-        
-        i_latent_factors = self.embed_item[i]
-        j_latent_factors = self.embed_item[j]
-        
-        diff_latent_factors = i_latent_factors - j_latent_factors # batch * latent
-        diff_text_factors = (i_text_factors - j_text_factors) / math.sqrt(768) # batch * 768
-    
-        if diff_text_factors.shape[0] == 768: # [768], eval set이라면
-            user_latent_factor = user_latent_factor.unsqueeze(0)
-            user_text_factors = user_text_factors.unsqueeze(0)
-            diff_text_factors = diff_text_factors.unsqueeze(0) # [1, text_emb]
-            diff_latent_factors = diff_latent_factors.unsqueeze(0) # [ 1, latent_emb]
-        
-        latent_factor = (user_latent_factor * diff_latent_factors).sum(dim=-1).unsqueeze(-1)
-        text_factor = (user_text_factors * diff_text_factors).sum(dim=-1).unsqueeze(-1)
-        
-        u_i_score = self.alpha * latent_factor + (1-self.alpha) * text_factor
-        text_bias = diff_text_factors.mm(self.text_bias)
-        
-        x_uij = i_bias - j_bias + u_i_score + text_bias
-        
+        y_ui = (self.embed_user[u] * self.embed_item[i]).sum(dim=-1)
+        # 사용자와 부정적인 아이템 간의 예측 점수 계산
+        y_uj = (self.embed_user[u] * self.embed_item[j]).sum(dim=-1)
+        # i와 j 정규화 거리
+        distance_ij = torch.tensor(self.norm_distances[i, j]).to(DEVICE)
         # 정규화 항 계산
+        regularizer = self.reg * (torch.sum(self.embed_user[u] ** 2) + torch.sum(self.embed_item[i] ** 2) + torch.sum(self.embed_item[j] ** 2))
         # BPR 손실 계산
-        loss = -torch.sum(torch.log(torch.sigmoid(x_uij.unsqueeze(0))))
-        return loss
+        loss = regularizer - torch.sum(torch.log(torch.sigmoid(distance_ij*(y_ui - y_uj))))
+        return y_ui, y_uj, loss
 
     def build_model(self, epoch=30, batch_size=32, topK = 10):
         '''
-        MF-BPR 모델을 구축하고 학습합니다.
+        DBPR 모델을 구축하고 학습합니다.
         Args:
             epoch (int): 학습의 최대 반복 횟수.
             num_thread (int): 병렬 실행을 위한 스레드 수.
@@ -103,89 +71,64 @@ class TextBPR(nn.Module):
         '''
         data_loader = DataLoader(self.dataset, batch_size=batch_size)
 
-        print("Training MF-BPR with: learning_rate=%.4f, regularization=%.7f, factors=%d, #epoch=%d, batch_size=%d, alpha=%.2f."
-               % (self.learning_rate, self.reg, self.factors, epoch, batch_size, alpha))
+        print("Training MF-BPR with: learning_rate=%.4f, regularization=%.7f, factors=%d, #epoch=%d, batch_size=%d."
+               % (self.learning_rate, self.reg, self.factors, epoch, batch_size))
         t1 = time.time()
-        
+
         max_hit, max_precision, max_recall, max_recall_epoch, max_precision_epoch, max_hit_epoch = 0,0,0,0,0,0
         for epoc in range(epoch):
             iter_loss = 0
-            count = 0
-            for s, (users, items_pos, items_negs) in enumerate(data_loader):
-                count += 1
+            for s, (users, items_pos, items_neg) in enumerate(data_loader):
                 # 기울기 초기화
                 self.mf_optim.zero_grad()
                 # Forward pass를 통해 예측과 손실 계산
-                for items_neg in items_negs:
-                    loss = self.forward(users, items_pos, items_neg)
-                    iter_loss += loss 
-                    # Backward pass 및 파라미터 업데이트
-                    loss.backward()
+                y_ui, y_uj, loss = self.forward(users, items_pos, items_neg)
+                iter_loss += loss
+                # Backward pass 및 파라미터 업데이트
+                loss.backward()
                 self.mf_optim.step()
             t2 = time.time()
-            
+
             # 성능 측정 함수를 통해 HitRatio 및 NDCG를 계산
-            if epoc % 1 == 0:
-                hits, recall, precision = self.evaluate_model(self.test_data, topK)
-                eval_loss = 0
-                # for idx, (u, i, j) in enumerate(self.test_for_eval):
-                #     loss = self.forward(u, i, j)
-                #     eval_loss += loss
-                total_samples = len(self.test_for_eval)
-                eval_loss = eval_loss / total_samples if total_samples > 0 else 0
-                iter_loss = iter_loss / count / batch_size
-                print(f"epoch={epoc}, train_loss = {iter_loss}, test_loss = {eval_loss}[{t2-t1}s] HitRatio@{topK} = {hits}, RECAll@{topK} = {recall}, PRECISION@{topK} = {precision} [{time.time()-t2}s]")
-                t1 = time.time()
-                if precision > max_precision:
-                    max_precision = precision
-                    max_precision_epoch = epoc
-                if recall > max_recall:
-                    max_recall = recall
-                    max_recall_epoch = epoc
-                if hits > max_hit:
-                    max_hit = hits
-                    max_hit_epoch = epoc
-                t1 = time.time()
-                
-        save_perform(reg, batch_size, latent_factors, text_factors, epoc, learning_rate, max_hit, max_hit_epoch, max_recall, max_recall_epoch, max_precision, max_precision_epoch, alpha)
-    
-    
+
+            hits, recall, precision = self.evaluate_model(self.test_data, topK)
+
+            print(f"epoch={epoc}, loss = {iter_loss}[{int(t2-t1)}s] HitRatio@{topK} = {hits}, RECAll@{topK} = {recall}, PRECISION@{topK} = {precision} [{int(time.time()-t2)}s]")
+            t1 = time.time()
+            if precision > max_precision:
+                max_precision = precision
+                max_precision_epoch = epoc
+            if recall > max_recall:
+                max_recall = recall
+                max_recall_epoch = epoc
+            if hits > max_hit:
+                max_hit = hits
+                max_hit_epoch = epoc
+            t1 = time.time()
+
+        #save_perform(reg, batch_size, latent_factors, text_factors, epoc, learning_rate, max_hit, max_hit_epoch, max_recall, max_recall_epoch, max_precision, max_precision_epoch)
+
+
     def evaluate_model(self, test, K):
         """
-        Top-K 추천의 성능(Hit_Ratio, NDCG)을 평가합니다.   
+        Top-K 추천의 성능(Hit_Ratio, NDCG)을 평가합니다.
         반환값: 각 테스트 상호작용의 점수.
         """
-        user_latent_factor = self.embed_user # batch * latent
-        item_latent_factors = self.embed_item # batch * latent
-            
-        user_text_factors = self.user_review_embeds / math.sqrt(768) # batch * latent
-        item_text_factors = self.poi_review_embeds / math.sqrt(768)# batch * 768
-            
-
-        latent_score_matrix = torch.mm(user_latent_factor, item_latent_factors.t())
-        text_score_matrix = torch.mm(user_text_factors, item_text_factors.t())
-        
-        score_matrix = self.alpha * latent_score_matrix + (1-self.alpha) * text_score_matrix
-        
-        item_bias = self.beta_items.squeeze()
-        item_bias = item_bias.view(1, -1)
-        score_matrix = score_matrix + item_bias
-        
-        
+        score_matrix = torch.mm(self.embed_user, self.embed_item.t())
         top_scores, top_indicies = torch.topk(score_matrix, K, dim=1)
-        
+
         hits = 0
         sum_recall = 0
-        sum_precision = 0 
+        sum_precision = 0
         for u,hist in enumerate(test):
             set_topk = set(i.item() for i in (top_indicies[u]))
             set_hist = set(hist)
-            
+
             if set_hist & set_topk:
                 hits += 1
             sum_precision += len(set_hist & set_topk) / len(set_topk)
             sum_recall += len(set_hist & set_topk) / len(set_hist)
-            
+
         return hits / len(test), sum_recall / len(test), sum_precision / len(test)
 
 class Yelp(Dataset):
@@ -200,8 +143,9 @@ class Yelp(Dataset):
         """
         path = 'dataset/'
         user_history_list, _, _, user_review_embeds ,_,_,_,poi_review_embeds, business_location = dp.get_data(path)
+        self.norm_distances = self.normalize_distances(self.calculate_distances(business_location))
 
-        self.train = [] 
+        self.train = []
         self.test = []
         self.poi_review_embeds = torch.tensor(poi_review_embeds).to(DEVICE)
         self.user_review_embeds = torch.tensor(user_review_embeds).to(DEVICE)
@@ -210,24 +154,20 @@ class Yelp(Dataset):
 
         items = [i for i in range(self.num_item)]
         self.neg = dict()
-        self.neg_for_eval = dict()
-        
+
         random.seed(30)
         for u, hist in enumerate(user_history_list):
             random.shuffle(hist)
             self.train.append(hist[:int(len(hist) * 0.7)])
             self.test.append(hist[int(len(hist) * 0.7) :])
-            
-            u_negs = set(items) - set(hist) 
+
+            u_negs = set(items) - set(hist)
             self.neg[u] = list(u_negs) # ng dataset 생성
-            self.neg_for_eval[u] = list(u_negs - set(self.test[u]))
-        
-        self.test_for_eval = []
-        for u,hist in enumerate(self.test):
-            for i in hist:
-                j = self.neg_for_eval[u][np.random.randint(0, len(self.neg_for_eval[u]))]
-                tmp = torch.tensor([u,i,j]).to(DEVICE)
-                self.test_for_eval.append(tmp)
+
+        # self.test_for_eval = []
+        # for u,hist in enumerate(self.test):
+        #     for i in hist:
+        #         self.test_for_eval.append([u,i])
 
         self.index_map = []
         for u, user_items in enumerate(self.train):
@@ -240,7 +180,7 @@ class Yelp(Dataset):
         """
         #return self.num_user
         return len(self.index_map)
-    
+
     def __getitem__(self, idx):
         """
         데이터셋에서 하나의 샘플을 가져옵니다.
@@ -257,15 +197,35 @@ class Yelp(Dataset):
         # # 사용자별로 하나의 긍정적인 상호작용 선택
         # i = self.train[u][np.random.randint(0, len(self.train[u]))]
         # # 부정적인 상호작용 무작위 선택
-        # #j = self.neg[u][np.random.randint(0, len(self.neg[u]))]
-        # j = random.sample(self.neg[u], 4)
+        # j = self.neg[u][np.random.randint(0, len(self.neg[u]))]
+        # #j = random.sample(self.neg[u], 4)
         # return (u, i, j)
-    
+
         u, i = self.index_map[idx]
         # 부정적인 아이템 무작위 선택
-        j = random.sample(self.neg[u], 4)
-        #j = self.neg[u][np.random.randint(0, len(self.neg[u]))]
+        j = self.neg[u][np.random.randint(0, len(self.neg[u]))]
         return (u, i, j)
+
+    def haversine(self, lat1, lon1, lat2, lon2):
+        R = 6371
+        dlat = np.radians(lat2 - lat1)
+        dlon = np.radians(lon1 - lon2)  # Note the change here
+        a = np.sin(dlat / 2) ** 2 + np.cos(np.radians(lat1)) * np.cos(np.radians(lat2)) * np.sin(dlon / 2) ** 2
+        c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+        d = R * c
+        return d
+
+    def calculate_distances(self, poi_data):
+        t = time.time()
+        distances = squareform(pdist(poi_data, lambda u, v: self.haversine(u[0], u[1], v[0], v[1])))
+        print(f"calculate_distance time : {int(time.time()-t)}")
+        return distances
+
+    def normalize_distances(self, distances):
+        min_d = np.min(distances)
+        max_d = np.max(distances)
+        norm_distances = 0.5 * (distances - min_d) / (max_d - min_d) + 0.5
+        return norm_distances
 
 
 def getHitRatio(ranklist, gtItem):
