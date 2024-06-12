@@ -16,11 +16,12 @@ class TextDistBPR(nn.Module):
             init_mean (float): 초기화에 사용되는 정규 분포의 평균.
             init_stdev (float): 초기화에 사용되는 정규 분포의 표준 편차.
         '''
-        super(TextBPR, self).__init__()
+        super(TextDistBPR, self).__init__()
         self.dataset = dataset
         self.train_data = dataset.train
         self.test_data = dataset.test
-        self.norm_distances = dataset.norm_distances
+        #self.norm_distances = dataset.norm_distances
+        self.norm_distances = torch.tensor(dataset.norm_distances).to(DEVICE)
         # self.test_for_eval = dataset.test_for_eval
         self.num_user = dataset.num_user
         self.num_item = dataset.num_item
@@ -90,9 +91,10 @@ class TextDistBPR(nn.Module):
         text_bias = diff_text_factors.mm(self.text_bias)
 
         x_uij = i_bias - j_bias + u_i_score + text_bias
-
-        distance_ij = torch.tensor(self.norm_distances[i, j]).to(DEVICE)
         
+        #print(type(self.norm_distances[i,j]))
+        #distance_ij = torch.tensor(self.norm_distances[i,j]).to(DEVICE)
+        distance_ij = self.norm_distances[i, j].to(DEVICE)
         x_uij = distance_ij * x_uij
         # 정규화 항 계산
         # BPR 손실 계산
@@ -196,8 +198,6 @@ class TextDistBPR(nn.Module):
             sum_recall += len(set_hist & set_topk) / len(set_hist)
 
         return hits / len(test), sum_recall / len(test), sum_precision / len(test)
-
-
 
 class Yelp(Dataset):
     def __init__(self):
