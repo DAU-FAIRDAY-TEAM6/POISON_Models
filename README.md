@@ -6,6 +6,9 @@ POISON 팀: 박동욱, 김진수, 김태희, 최범규
 ![image](https://github.com/user-attachments/assets/68b0d3ba-1333-42b3-a5cc-c8496181f5a9)
 
 ## 모델 파이프라인
+![모델 파이프라인](https://github.com/user-attachments/assets/05967621-ed68-4951-92bf-1b15f182d82e)
+
+## 방법론
 ### LightGCN, BERT
 베이스 추천 모델로 LightGCN 사용  
 리뷰 임베딩 추출로 BERT 사용  
@@ -23,3 +26,4 @@ POI 데이터 셋인 **Yelp** 데이터셋 사용
 
 ## 실험 결과
 ![image](https://github.com/user-attachments/assets/ba81c86a-3709-416a-9e2a-0606d6368433)
+컨텐츠 정보(리뷰, 거리)를 활용하여 추천 성능 향상
